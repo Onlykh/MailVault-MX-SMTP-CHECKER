@@ -18,7 +18,7 @@ A desktop application for verifying email address validity through format checki
 ### Prerequisites
 
 - Python 3.8 or higher
-- PyQt6
+- PyQt6 6.5 or higher
 - dnspython
 
 ### Setup
