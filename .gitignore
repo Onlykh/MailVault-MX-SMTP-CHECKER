@@ -1,3 +1,7 @@
 venv
 env
 myenv
+test.*
+logs
+__pycache__
+*.db
