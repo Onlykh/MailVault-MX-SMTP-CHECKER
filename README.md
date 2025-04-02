@@ -26,8 +26,8 @@ A desktop application for verifying email address validity through format checki
 1. Clone the repository:
 
    ```
-   git clone https://github.com/OnlyKH/email-verifier.git
-   cd email-verifier
+   git clone https://github.com/OnlyKH/MailVault-MX-SMTP-CHECKER.git
+   cd MailVault-MX-SMTP-CHECKER
    ```
 
 2. Create a virtual environment (recommended):
@@ -85,7 +85,7 @@ Results are stored in a local SQLite database for future reference and faster re
 ## Project Structure
 
 ```
-email-verifier/
+MailVault-MX-SMTP-CHECKER/
 ├── email_verifier/           # Main package
 │   ├── core/                 # Core verification logic
 │   │   ├── database.py       # Database operations
