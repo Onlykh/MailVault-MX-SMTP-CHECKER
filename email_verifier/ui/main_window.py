@@ -138,7 +138,7 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         """Initialize the user interface."""
-        self.setWindowTitle("Email Verifier")
+        self.setWindowTitle("MailVault MX-SMTP CHECKER")
         self.setMinimumSize(900, 600)
 
         # Create central widget and main layout
@@ -765,8 +765,8 @@ class MainWindow(QMainWindow):
     def show_about(self):
         """Show about dialog."""
         QMessageBox.about(
-            self, "About Email Verifier",
-            "Email Verifier 1.0\n\n"
+            self, "About MailVault MX-SMTP CHECKER",
+            "MailVault MX-SMTP CHECKER 1.0\n\n"
             "A tool to verify if email addresses exist and can receive emails.\n\n"
             "Features:\n"
             "- Email format validation\n"

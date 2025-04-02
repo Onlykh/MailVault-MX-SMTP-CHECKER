@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Email Verifier - A tool to check if an email address exists and can receive emails
+MailVault MX-SMTP CHECKER - A tool to check if an email address exists and can receive emails
 by verifying MX records and performing SMTP verification.
 """
 
@@ -34,7 +34,7 @@ def main():
     setup_logging()
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Email Verifier")
+    app.setApplicationName("MailVault MX-SMTP CHECKER")
 
     # Set the database path to be in the user's home directory or app directory
     db_path = os.path.join(os.path.dirname(

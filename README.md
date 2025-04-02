@@ -1,8 +1,8 @@
-# Email Verifier
+# MailVault MX-SMTP CHECKER
 
 A desktop application for verifying email address validity through format checking, DNS verification, and SMTP testing.
 
-![Email Verifier Screenshot](docs/screenshot.png)
+![MailVault MX-SMTP CHECKER Screenshot](docs/screenshot.png)
 
 ## Features
 
@@ -73,7 +73,7 @@ A desktop application for verifying email address validity through format checki
 
 ## How It Works
 
-Email Verifier uses a multi-stage verification process:
+MailVault MX-SMTP CHECKER uses a multi-stage verification process:
 
 1. **Format Validation**: Checks if the email follows standard format using regex
 2. **Domain Checking**: Extracts and verifies the email domain
