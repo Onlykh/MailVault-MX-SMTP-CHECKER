@@ -15,6 +15,7 @@ class VerificationResult:
     smtp_check: Optional[bool] = None
     smtp_response: Optional[str] = None
     verified_at: str = None
+    created_at: Optional[str] = None
 
     def __post_init__(self):
         if self.mx_records is None:
@@ -32,7 +33,7 @@ class VerificationResult:
         return True
 
     def to_dict(self) -> dict:
-        """Convert the dataclass to a dictionary."""
+        """Convert the result to a dictionary."""
         result = asdict(self)
         # Convert list to JSON string for database storage
         result['mx_records'] = json.dumps(result['mx_records'])
@@ -41,10 +42,22 @@ class VerificationResult:
     @classmethod
     def from_dict(cls, data: dict) -> 'VerificationResult':
         """Create a VerificationResult from a dictionary."""
+        # Make a copy to avoid modifying the original
+        data_copy = data.copy()
+
         # Convert JSON string back to list
-        if 'mx_records' in data and isinstance(data['mx_records'], str):
-            data['mx_records'] = json.loads(data['mx_records'])
-        return cls(**data)
+        if 'mx_records' in data_copy and isinstance(data_copy['mx_records'], str):
+            data_copy['mx_records'] = json.loads(data_copy['mx_records'])
+
+        # Remove fields that aren't in the VerificationResult class
+        # (This is a fallback in case there are other unexpected fields)
+        known_fields = {'email', 'is_valid_format', 'domain', 'has_mx_records',
+                        'mx_records', 'smtp_check', 'smtp_response', 'verified_at', 'created_at'}
+        for key in list(data_copy.keys()):
+            if key not in known_fields:
+                data_copy.pop(key)
+
+        return cls(**data_copy)
 
     def to_csv_row(self) -> List[str]:
         """Convert the result to a CSV row."""

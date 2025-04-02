@@ -1,12 +1,14 @@
 import sys
 import os
+import traceback
 from typing import List, Optional
 import logging
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QTableWidget,
     QTableWidgetItem, QCheckBox, QProgressBar, QMessageBox,
-    QTabWidget, QComboBox, QGroupBox, QSplitter, QMenu, QStatusBar
+    QTabWidget, QComboBox, QGroupBox, QSplitter, QMenu, QStatusBar,
+    QInputDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
 from PyQt6.QtGui import QAction, QIcon
@@ -45,6 +47,7 @@ class VerificationWorker(QThread):
                 self.result_ready.emit(result)
             except Exception as e:
                 logger.error(f"Error verifying {email}: {str(e)}")
+                logger.error(traceback.format_exc())
 
             self.progress_updated.emit(i + 1, total)
 
@@ -52,6 +55,66 @@ class VerificationWorker(QThread):
 
     def stop(self):
         self.should_stop = True
+
+
+class SearchWorker(QThread):
+    """Worker thread for database searches."""
+    results_ready = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, db, search_term=None, deliverable_filter=None, domain_filter=None, get_all=False):
+        super().__init__()
+        self.db = db
+        self.search_term = search_term
+        self.deliverable_filter = deliverable_filter
+        self.domain_filter = domain_filter
+        self.get_all = get_all
+        self.stopped = False
+
+    def stop(self):
+        """Signal the thread to stop."""
+        self.stopped = True
+
+    def run(self):
+        if self.stopped:
+            return
+
+        try:
+            if self.get_all:
+                # Just get all results (limited to 1000)
+                results = self.db.get_all_results(limit=1000)
+            else:
+                # Using search function with filters
+                results = self.db.search_results(
+                    self.search_term, self.deliverable_filter, self.domain_filter
+                )
+
+            if not self.stopped:
+                self.results_ready.emit(results)
+        except Exception as e:
+            logger.error(f"Search worker error: {str(e)}")
+            logger.error(traceback.format_exc())
+            if not self.stopped:
+                self.error_occurred.emit(str(e))
+
+
+class DomainsWorker(QThread):
+    """Worker thread for loading domain summary."""
+    domains_ready = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, db):
+        super().__init__()
+        self.db = db
+
+    def run(self):
+        try:
+            domains = self.db.get_domains_summary()
+            self.domains_ready.emit(domains)
+        except Exception as e:
+            logger.error(f"Domains worker error: {str(e)}")
+            logger.error(traceback.format_exc())
+            self.error_occurred.emit(str(e))
 
 
 class MainWindow(QMainWindow):
@@ -64,7 +127,12 @@ class MainWindow(QMainWindow):
         self.db = self.verifier.db
 
         self.worker = None
+        self.search_worker = None
+        self.domains_worker = None
         self.current_results = []
+
+        # Connect aboutToQuit signal to cleanup threads
+        QApplication.instance().aboutToQuit.connect(self.cleanup_threads)
 
         self.init_ui()
 
@@ -93,6 +161,29 @@ class MainWindow(QMainWindow):
 
         # Create menu bar
         self.create_menu_bar()
+
+    def cleanup_threads(self):
+        """Clean up threads before application quits."""
+        # Clean up verification worker
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()  # Call the stop method if defined
+            self.worker.wait(1000)  # Wait for thread to finish, with timeout
+            if self.worker.isRunning():
+                self.worker.terminate()
+
+        # Clean up search worker
+        if self.search_worker and self.search_worker.isRunning():
+            # Wait for thread to finish, with timeout
+            self.search_worker.wait(1000)
+            if self.search_worker.isRunning():
+                self.search_worker.terminate()
+
+        # Clean up domains worker
+        if self.domains_worker and self.domains_worker.isRunning():
+            # Wait for thread to finish, with timeout
+            self.domains_worker.wait(1000)
+            if self.domains_worker.isRunning():
+                self.domains_worker.terminate()
 
     def create_menu_bar(self):
         """Create the application menu bar."""
@@ -227,9 +318,9 @@ class MainWindow(QMainWindow):
         self.domain_filter.currentIndexChanged.connect(self.search_history)
         search_layout.addWidget(self.domain_filter)
 
-        search_button = QPushButton("Search")
-        search_button.clicked.connect(self.search_history)
-        search_layout.addWidget(search_button)
+        self.search_button = QPushButton("Search")
+        self.search_button.clicked.connect(self.search_history)
+        search_layout.addWidget(self.search_button)
 
         clear_button = QPushButton("Clear")
         clear_button.clicked.connect(self.clear_search)
@@ -288,6 +379,8 @@ class MainWindow(QMainWindow):
                     self, "No Emails Found", "No valid email addresses were found in the file."
                 )
         except Exception as e:
+            logger.error(f"Error loading email file: {str(e)}")
+            logger.error(traceback.format_exc())
             QMessageBox.critical(
                 self, "Error Loading File", f"An error occurred while loading the file: {str(e)}"
             )
@@ -339,8 +432,15 @@ class MainWindow(QMainWindow):
 
     def handle_result(self, result: VerificationResult):
         """Handle a verification result."""
-        self.results_table.add_result(result)
-        self.current_results.append(result)
+        try:
+            # Store the result
+            self.current_results.append(result)
+
+            # Queue UI update to happen in the main thread
+            QTimer.singleShot(0, lambda: self.results_table.add_result(result))
+        except Exception as e:
+            logger.error(f"Error handling verification result: {str(e)}")
+            logger.error(traceback.format_exc())
 
     def verification_finished(self):
         """Handle the end of the verification process."""
@@ -366,49 +466,105 @@ class MainWindow(QMainWindow):
         )
 
         if file_path:
-            if save_results_to_csv(self.current_results, file_path, VerificationResult.get_csv_header()):
-                QMessageBox.information(
-                    self, "Export Successful", f"Results successfully exported to {file_path}"
-                )
-            else:
+            try:
+                if save_results_to_csv(self.current_results, file_path, VerificationResult.get_csv_header()):
+                    QMessageBox.information(
+                        self, "Export Successful", f"Results successfully exported to {file_path}"
+                    )
+                else:
+                    QMessageBox.critical(
+                        self, "Export Failed", "An error occurred while exporting the results."
+                    )
+            except Exception as e:
+                logger.error(f"Error exporting results: {str(e)}")
+                logger.error(traceback.format_exc())
                 QMessageBox.critical(
-                    self, "Export Failed", "An error occurred while exporting the results."
+                    self, "Export Error", f"An error occurred: {str(e)}"
                 )
 
     def load_history(self):
         """Load verification history from the database."""
-        results = self.db.get_all_results()
-        self.history_table.set_results(results)
+        try:
+            # Show loading indicator
+            self.status_bar.showMessage("Loading history...")
+            self.refresh_button.setEnabled(False)
 
-        # Update domain filter
-        self.update_domain_filter()
+            # Create and start worker thread to load all results
+            self.search_worker = SearchWorker(self.db, get_all=True)
+            self.search_worker.results_ready.connect(self.on_history_loaded)
+            self.search_worker.error_occurred.connect(self.on_search_error)
+            self.search_worker.finished.connect(
+                lambda: self.refresh_button.setEnabled(True))
+            self.search_worker.start()
+        except Exception as e:
+            logger.error(f"Error loading history: {str(e)}")
+            logger.error(traceback.format_exc())
+            self.status_bar.showMessage(f"Error loading history: {str(e)}")
+            self.refresh_button.setEnabled(True)
 
-        self.status_bar.showMessage(
-            f"Loaded {len(results)} historical verification results.")
+    def on_history_loaded(self, results):
+        """Handle loaded history results."""
+        try:
+            # Update the table with results
+            self.history_table.set_results(results)
 
-    def update_domain_filter(self):
-        """Update the domain filter dropdown with domains from the database."""
-        domains = self.db.get_domains_summary()
+            # Update domain filter (in a separate thread)
+            self.load_domains()
 
-        # Store current selection
-        current_text = self.domain_filter.currentText()
+            # Update status bar
+            self.status_bar.showMessage(
+                f"Loaded {len(results)} history records")
+        except Exception as e:
+            logger.error(f"Error displaying history: {str(e)}")
+            logger.error(traceback.format_exc())
+            self.status_bar.showMessage(f"Error loading history: {str(e)}")
 
-        # Clear and repopulate
-        self.domain_filter.clear()
-        self.domain_filter.addItem("All")
+    def load_domains(self):
+        """Load domain summary in a separate thread."""
+        self.domains_worker = DomainsWorker(self.db)
+        self.domains_worker.domains_ready.connect(self.on_domains_loaded)
+        self.domains_worker.error_occurred.connect(
+            lambda msg: logger.error(f"Error loading domains: {msg}"))
+        self.domains_worker.start()
 
-        for domain_info in domains:
-            domain = domain_info['domain']
-            if domain:
-                self.domain_filter.addItem(domain)
+    def on_domains_loaded(self, domains):
+        """Handle loaded domains data."""
+        try:
+            # Store current selection
+            current_text = self.domain_filter.currentText()
 
-        # Restore selection if possible
-        index = self.domain_filter.findText(current_text)
-        if index >= 0:
-            self.domain_filter.setCurrentIndex(index)
+            # Clear and repopulate
+            self.domain_filter.clear()
+            self.domain_filter.addItem("All")
+
+            for domain_info in domains:
+                domain = domain_info['domain']
+                if domain:
+                    self.domain_filter.addItem(domain)
+
+            # Restore selection if possible
+            index = self.domain_filter.findText(current_text)
+            if index >= 0:
+                self.domain_filter.setCurrentIndex(index)
+        except Exception as e:
+            logger.error(f"Error updating domain filter: {str(e)}")
+            logger.error(traceback.format_exc())
+
+    def closeEvent(self, event):
+        """Handle window close event."""
+        # Clean up threads before closing
+        self.cleanup_threads()
+        event.accept()
 
     def search_history(self):
         """Search history with current filters."""
+        # Show loading indicator
+        self.status_bar.showMessage("Searching...")
+
+        # Disable search button
+        self.search_button.setEnabled(False)
+
+        # Get search parameters
         search_term = self.search_edit.text().strip()
 
         # Get deliverable filter
@@ -424,13 +580,52 @@ class MainWindow(QMainWindow):
         if self.domain_filter.currentIndex() > 0:
             domain_filter = self.domain_filter.currentText()
 
-        # Perform search
-        results = self.db.search_results(
-            search_term, deliverable_filter, domain_filter)
-        self.history_table.set_results(results)
+        # Clean up any existing worker
+        if self.search_worker and self.search_worker.isRunning():
+            self.search_worker.wait()  # Wait for thread to finish
 
-        self.status_bar.showMessage(
-            f"Found {len(results)} results matching your search criteria.")
+        # Create and start the worker thread
+        self.search_worker = SearchWorker(
+            self.db, search_term, deliverable_filter, domain_filter
+        )
+
+        # Connect signals
+        self.search_worker.results_ready.connect(self.on_search_results_ready)
+        self.search_worker.error_occurred.connect(self.on_search_error)
+        self.search_worker.finished.connect(
+            lambda: self.search_button.setEnabled(True))
+
+        # Start the worker
+        self.search_worker.start()
+
+    def on_search_results_ready(self, results):
+        """Handle search results."""
+        try:
+            # Update the table with results
+            self.history_table.set_results(results)
+
+            # Update status bar
+            self.status_bar.showMessage(
+                f"Found {len(results)} results matching your search criteria.")
+        except Exception as e:
+            logger.error(f"Error displaying search results: {str(e)}")
+            logger.error(traceback.format_exc())
+            self.status_bar.showMessage(f"Error displaying results: {str(e)}")
+
+    def on_search_error(self, error_message):
+        """Handle search errors."""
+        logger.error(f"Search error: {error_message}")
+
+        # Show error message
+        QMessageBox.critical(
+            self, "Search Error", f"An error occurred during search: {error_message}"
+        )
+
+        # Update status bar
+        self.status_bar.showMessage("Search failed")
+
+        # Re-enable the search button
+        self.search_button.setEnabled(True)
 
     def clear_search(self):
         """Clear search filters and reload history."""
@@ -463,16 +658,23 @@ class MainWindow(QMainWindow):
             )
 
             if confirm == QMessageBox.StandardButton.Yes:
-                if self.db.delete_results(emails_to_delete):
-                    self.load_history()
-                    QMessageBox.information(
-                        self, "Deletion Successful",
-                        f"Successfully deleted {len(emails_to_delete)} verification results."
-                    )
-                else:
+                try:
+                    if self.db.delete_results(emails_to_delete):
+                        self.load_history()
+                        QMessageBox.information(
+                            self, "Deletion Successful",
+                            f"Successfully deleted {len(emails_to_delete)} verification results."
+                        )
+                    else:
+                        QMessageBox.critical(
+                            self, "Deletion Failed",
+                            "An error occurred while deleting the verification results."
+                        )
+                except Exception as e:
+                    logger.error(f"Error deleting results: {str(e)}")
+                    logger.error(traceback.format_exc())
                     QMessageBox.critical(
-                        self, "Deletion Failed",
-                        "An error occurred while deleting the verification results."
+                        self, "Deletion Error", f"An error occurred: {str(e)}"
                     )
 
     def export_history(self):
@@ -489,13 +691,20 @@ class MainWindow(QMainWindow):
         )
 
         if file_path:
-            if save_results_to_csv(results, file_path, VerificationResult.get_csv_header()):
-                QMessageBox.information(
-                    self, "Export Successful", f"History successfully exported to {file_path}"
-                )
-            else:
+            try:
+                if save_results_to_csv(results, file_path, VerificationResult.get_csv_header()):
+                    QMessageBox.information(
+                        self, "Export Successful", f"History successfully exported to {file_path}"
+                    )
+                else:
+                    QMessageBox.critical(
+                        self, "Export Failed", "An error occurred while exporting the history."
+                    )
+            except Exception as e:
+                logger.error(f"Error exporting history: {str(e)}")
+                logger.error(traceback.format_exc())
                 QMessageBox.critical(
-                    self, "Export Failed", "An error occurred while exporting the history."
+                    self, "Export Error", f"An error occurred: {str(e)}"
                 )
 
     def verify_single_email(self):
@@ -506,7 +715,14 @@ class MainWindow(QMainWindow):
 
         if ok and email:
             try:
+                # Show busy cursor and disable UI
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+                # Perform verification
                 result = self.verifier.verify(email, force_check=True)
+
+                # Restore cursor
+                QApplication.restoreOverrideCursor()
 
                 message = (
                     f"Email: {result.email}\n"
@@ -530,6 +746,11 @@ class MainWindow(QMainWindow):
                     self.load_history()
 
             except Exception as e:
+                # Restore cursor
+                QApplication.restoreOverrideCursor()
+
+                logger.error(f"Error verifying single email: {str(e)}")
+                logger.error(traceback.format_exc())
                 QMessageBox.critical(
                     self, "Verification Error", f"An error occurred: {str(e)}"
                 )

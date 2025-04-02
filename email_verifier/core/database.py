@@ -1,5 +1,7 @@
 import sqlite3
 import os
+import json
+import traceback
 from typing import List, Optional, Dict, Any
 import logging
 
@@ -18,22 +20,25 @@ class EmailVerificationDB:
 
     def _create_tables_if_not_exist(self):
         """Create tables if they don't exist."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS verification_results (
-                email TEXT PRIMARY KEY,
-                is_valid_format INTEGER,
-                domain TEXT,
-                has_mx_records INTEGER,
-                mx_records TEXT,
-                smtp_check INTEGER,
-                smtp_response TEXT,
-                verified_at TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            conn.commit()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS verification_results (
+                    email TEXT PRIMARY KEY,
+                    is_valid_format INTEGER,
+                    domain TEXT,
+                    has_mx_records INTEGER,
+                    mx_records TEXT,
+                    smtp_check INTEGER,
+                    smtp_response TEXT,
+                    verified_at TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                ''')
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Error creating tables: {str(e)}")
 
     def get_result(self, email: str) -> Optional[VerificationResult]:
         """Get verification result for an email."""
@@ -48,10 +53,39 @@ class EmailVerificationDB:
                 row = cursor.fetchone()
 
                 if row:
-                    return VerificationResult.from_dict(dict(row))
+                    try:
+                        row_dict = dict(row)
+                        # Explicitly create filtered dict
+                        filtered_dict = {
+                            'email': row_dict.get('email', ''),
+                            'is_valid_format': bool(row_dict.get('is_valid_format', 0)),
+                            'domain': row_dict.get('domain'),
+                            'has_mx_records': bool(row_dict.get('has_mx_records', 0)),
+                            'mx_records': self._parse_mx_records(row_dict.get('mx_records')),
+                            'smtp_check': None if row_dict.get('smtp_check') is None else bool(row_dict.get('smtp_check')),
+                            'smtp_response': row_dict.get('smtp_response'),
+                            'verified_at': row_dict.get('verified_at'),
+                            'created_at': row_dict.get('created_at')
+                        }
+                        return VerificationResult(**filtered_dict)
+                    except Exception as e:
+                        logger.error(
+                            f"Error creating VerificationResult from row: {str(e)}")
+                        logger.error(f"Row data: {row_dict}")
+                        return None
         except Exception as e:
             logger.error(f"Error retrieving result for {email}: {str(e)}")
         return None
+
+    def _parse_mx_records(self, mx_records_str):
+        """Parse MX records from JSON string."""
+        if not mx_records_str:
+            return []
+        try:
+            return json.loads(mx_records_str)
+        except Exception as e:
+            logger.error(f"Error parsing MX records: {str(e)}")
+            return []
 
     def save_result(self, result: VerificationResult) -> bool:
         """Save verification result to database."""
@@ -78,6 +112,7 @@ class EmailVerificationDB:
                 return True
         except Exception as e:
             logger.error(f"Error saving result for {result.email}: {str(e)}")
+            logger.error(traceback.format_exc())
             return False
 
     def get_all_results(self, limit: int = None, offset: int = 0) -> List[VerificationResult]:
@@ -98,10 +133,31 @@ class EmailVerificationDB:
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
 
-                results = [VerificationResult.from_dict(
-                    dict(row)) for row in rows]
+                for row in rows:
+                    try:
+                        row_dict = dict(row)
+                        # Explicitly create filtered dict
+                        filtered_dict = {
+                            'email': row_dict.get('email', ''),
+                            'is_valid_format': bool(row_dict.get('is_valid_format', 0)),
+                            'domain': row_dict.get('domain'),
+                            'has_mx_records': bool(row_dict.get('has_mx_records', 0)),
+                            'mx_records': self._parse_mx_records(row_dict.get('mx_records')),
+                            'smtp_check': None if row_dict.get('smtp_check') is None else bool(row_dict.get('smtp_check')),
+                            'smtp_response': row_dict.get('smtp_response'),
+                            'verified_at': row_dict.get('verified_at'),
+                            'created_at': row_dict.get('created_at')
+                        }
+                        result = VerificationResult(**filtered_dict)
+                        results.append(result)
+                    except Exception as e:
+                        logger.error(
+                            f"Error creating VerificationResult from row: {str(e)}")
+                        logger.error(f"Row data: {row_dict}")
+                        continue
         except Exception as e:
             logger.error(f"Error retrieving all results: {str(e)}")
+            logger.error(traceback.format_exc())
         return results
 
     def search_results(self, search_term: str,
@@ -110,10 +166,11 @@ class EmailVerificationDB:
         """Search verification results with filters."""
         results = []
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with sqlite3.connect(self.db_path, timeout=30) as conn:  # Add timeout
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
+                # Add limit to prevent large result sets that could freeze the app
                 query = "SELECT * FROM verification_results WHERE 1=1"
                 params = []
 
@@ -131,15 +188,41 @@ class EmailVerificationDB:
                     query += " AND domain = ?"
                     params.append(domain_filter)
 
-                query += " ORDER BY created_at DESC"
+                # Limit results to prevent freezing
+                query += " ORDER BY created_at DESC LIMIT 1000"
 
+                logger.info(
+                    f"Executing search query: {query} with params: {params}")
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
+                logger.info(f"Got {len(rows)} results from database")
 
-                results = [VerificationResult.from_dict(
-                    dict(row)) for row in rows]
+                for row in rows:
+                    try:
+                        row_dict = dict(row)
+                        # Explicitly create filtered dict
+                        filtered_dict = {
+                            'email': row_dict.get('email', ''),
+                            'is_valid_format': bool(row_dict.get('is_valid_format', 0)),
+                            'domain': row_dict.get('domain'),
+                            'has_mx_records': bool(row_dict.get('has_mx_records', 0)),
+                            'mx_records': self._parse_mx_records(row_dict.get('mx_records')),
+                            'smtp_check': None if row_dict.get('smtp_check') is None else bool(row_dict.get('smtp_check')),
+                            'smtp_response': row_dict.get('smtp_response'),
+                            'verified_at': row_dict.get('verified_at'),
+                            'created_at': row_dict.get('created_at')
+                        }
+                        result = VerificationResult(**filtered_dict)
+                        results.append(result)
+                    except Exception as e:
+                        logger.error(
+                            f"Error creating VerificationResult from row: {str(e)}")
+                        logger.error(
+                            f"Row data: {row_dict if 'row_dict' in locals() else 'unknown'}")
+                        continue
         except Exception as e:
             logger.error(f"Error searching results: {str(e)}")
+            logger.error(traceback.format_exc())
         return results
 
     def count_results(self) -> int:
@@ -174,6 +257,7 @@ class EmailVerificationDB:
                 domains = [dict(row) for row in rows]
         except Exception as e:
             logger.error(f"Error getting domains summary: {str(e)}")
+            logger.error(traceback.format_exc())
         return domains
 
     def delete_results(self, emails: List[str]) -> bool:
@@ -191,4 +275,5 @@ class EmailVerificationDB:
                 return True
         except Exception as e:
             logger.error(f"Error deleting results: {str(e)}")
+            logger.error(traceback.format_exc())
             return False

@@ -93,16 +93,60 @@ class ResultsTableWidget(QTableWidget):
     def set_results(self, results: List[VerificationResult]):
         """Set all results at once."""
         self.clear_results()
-        self.results = results
 
-        # Temporarily disable sorting for better performance
+        # Store results but don't modify during iteration
+        self.results = results.copy()  # Make a copy to be safe
+
+        # Temporarily disable sorting and updates for better performance
         self.setSortingEnabled(False)
+        self.setUpdatesEnabled(False)
 
-        # Add all results
-        for result in results:
-            self.add_result(result)
+        # Pre-allocate rows - more efficient than inserting one by one
+        self.setRowCount(len(self.results))
 
-        # Re-enable sorting
+        # Add all results without calling add_result to avoid recursion
+        for row, result in enumerate(self.results):
+            try:
+                # Email
+                self.setItem(row, 0, QTableWidgetItem(result.email))
+
+                # Status
+                status_item = QTableWidgetItem(
+                    "Deliverable" if result.is_deliverable else "Undeliverable")
+                status_item.setForeground(
+                    QBrush(QColor("green" if result.is_deliverable else "red")))
+                self.setItem(row, 1, status_item)
+
+                # Valid Format
+                self.setItem(row, 2, QTableWidgetItem(
+                    "Yes" if result.is_valid_format else "No"))
+
+                # Domain
+                self.setItem(row, 3, QTableWidgetItem(result.domain or ""))
+
+                # MX Records
+                mx_text = "Yes" if result.has_mx_records else "No"
+                if result.has_mx_records and result.mx_records:
+                    mx_text = f"Yes ({len(result.mx_records)})"
+                self.setItem(row, 4, QTableWidgetItem(mx_text))
+
+                # SMTP Check
+                smtp_text = "Not Checked"
+                if result.smtp_check is not None:
+                    smtp_text = "Passed" if result.smtp_check else "Failed"
+                    if result.smtp_response:
+                        smtp_text += f" - {result.smtp_response}"
+                self.setItem(row, 5, QTableWidgetItem(smtp_text))
+
+                # Verified At
+                self.setItem(row, 6, QTableWidgetItem(result.verified_at))
+
+            except Exception as e:
+                logger.error(f"Error adding result row {row}: {str(e)}")
+                continue
+
+        # Re-enable updates and sorting
+        self.setUpdatesEnabled(True)
         self.setSortingEnabled(True)
 
     def clear_results(self):
